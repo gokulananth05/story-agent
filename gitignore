@@ -1,0 +1,12 @@
+# Generated audio
+*.mp3
+
+# Secrets and local configuration
+.env
+*.pem
+.aws/
+credentials
+
+# Python
+__pycache__/
+*.pyc

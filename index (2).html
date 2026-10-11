@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sleepy Story Time</title>
+<style>
+  :root { --bg:#0b0d1a; --card:#12152a; --line:#232846; --text:#b9bfd8; --soft:#7d84a6; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         padding:24px; background:var(--bg); color:var(--text);
+         font-family: Georgia, "Times New Roman", serif; color-scheme: dark; }
+  main { width:100%; max-width:440px; transition: opacity 4s ease; }
+  main.dim { opacity:.05; }
+  h1 { font-weight:normal; font-size:1.7rem; margin:0 0 4px; }
+  .sub { color:var(--soft); margin:0 0 20px; }
+  label { display:block; margin:16px 0 6px; color:var(--soft); font-size:.9rem; }
+  input, select { width:100%; padding:12px; border-radius:10px; border:1px solid var(--line);
+                  background:var(--card); color:var(--text); font-size:1rem; font-family:inherit; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .chip { background:none; border:1px solid var(--line); color:var(--soft); padding:6px 12px;
+          border-radius:20px; cursor:pointer; font-family:inherit; font-size:.9rem; }
+  .go { width:100%; margin-top:24px; padding:14px; border:0; border-radius:12px;
+        background:#2a3070; color:#dfe3ff; font-size:1.05rem; font-family:inherit; cursor:pointer; }
+  .go:disabled { opacity:.6; cursor:wait; }
+  #status { min-height:1.5em; margin-top:16px; color:var(--soft); text-align:center; }
+  #status.error { color:#d9a0a0; }
+  audio { width:100%; margin-top:16px; }
+  details { margin-top:16px; color:var(--soft); font-size:.9rem; }
+  summary { cursor:pointer; }
+  .hint { margin-top:20px; font-size:.8rem; color:#555b7c; text-align:center; }
+</style>
+</head>
+<body>
+<main id="main">
+  <h1>Sleepy Story Time</h1>
+  <p class="sub">A calm bedtime story that slowly drifts to sleep.</p>
+
+  <label for="idea">What should tonight's story be about?</label>
+  <input id="idea" maxlength="100" placeholder="a lion who is afraid of the dark">
+  <div class="chips" id="chips"></div>
+
+  <label for="minutes">How long until sleep?</label>
+  <select id="minutes">
+    <option value="2">About 2 minutes</option>
+    <option value="3" selected>About 3 minutes</option>
+    <option value="5">About 5 minutes</option>
+    <option value="8">About 8 minutes</option>
+    <option value="10">About 10 minutes</option>
+  </select>
+
+  <label for="language">Language</label>
+  <select id="language">
+    <option value="en" selected>English</option>
+    <option value="hi">हिन्दी (Hindi)</option>
+  </select>
+
+  <label for="sound">Soft sound while you drift off</label>
+  <select id="sound">
+    <option value="none" selected>None (quiet)</option>
+    <option value="rain">Gentle rain</option>
+    <option value="ocean">Ocean waves</option>
+    <option value="hum">Soft hum</option>
+  </select>
+
+  <label for="code">Passcode</label>
+  <input id="code" type="password" autocomplete="off">
+
+  <details id="setup">
+    <summary>Setup</summary>
+    <label for="url">Function URL (from the Lambda console)</label>
+    <input id="url" placeholder="https://xxxx.lambda-url.us-east-1.on.aws/" autocomplete="off">
+  </details>
+
+  <button class="go" id="go">Tell me a story</button>
+  <div id="status" aria-live="polite"></div>
+  <audio id="player" controls hidden></audio>
+  <p class="hint">Once the story starts, the screen fades to dark. Tap anywhere to bring it back.</p>
+</main>
+
+<script>
+  // Optional: you can leave this empty and paste the Function URL into the Setup box on the page.
+  // Never publish this file with your real URL filled in.
+  const FUNCTION_URL = "";
+
+  const WAITING = ["Gathering the stars...", "Finding a cozy spot...", "Waking up the storyteller...", "Almost ready..."];
+  const IDEAS = ["a sleepy lion", "a little star", "a baby elephant", "a bunny and the moon"];
+
+  const $ = (id) => document.getElementById(id);
+  const main = $("main"), status = $("status"), player = $("player"), go = $("go");
+  let waitTimer, dimTimer;
+
+  // Friendly starting ideas, so the first run is never a blank box.
+  IDEAS.forEach((text) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = text;
+    chip.onclick = () => { $("idea").value = text; };
+    $("chips").appendChild(chip);
+  });
+
+  try { $("url").value = localStorage.getItem("functionUrl") || ""; } catch (e) {}
+
+  function setStatus(text, isError = false) {
+    status.textContent = text;
+    status.className = isError ? "error" : "";
+  }
+
+  function startWaiting() {
+    let i = 0;
+    setStatus(WAITING[0]);
+    waitTimer = setInterval(() => { i = (i + 1) % WAITING.length; setStatus(WAITING[i]); }, 5000);
+  }
+
+  function dimSoon() {
+    clearTimeout(dimTimer);
+    dimTimer = setTimeout(() => main.classList.add("dim"), 8000);
+  }
+
+  // Tap anywhere to wake the screen; it dims again if the story is still playing.
+  document.addEventListener("pointerdown", () => {
+    main.classList.remove("dim");
+    if (!player.paused) dimSoon();
+  });
+  player.addEventListener("play", () => {
+    dimSoon();
+    if (master) ctx.resume(); else startAmbient($("sound").value);
+  });
+  player.addEventListener("pause", () => {
+    clearTimeout(dimTimer);
+    if (ctx && master && !player.ended) ctx.suspend();
+  });
+  // When the story ends, the sound lingers and fades out slowly over 45 seconds.
+  player.addEventListener("ended", () => {
+    clearTimeout(dimTimer);
+    if (ctx) ctx.resume();
+    fadeAmbient(45);
+  });
+
+  // ---- Soft sounds, made in the browser (no audio files needed) ----
+  const LEVELS = { rain: 0.10, ocean: 0.22, hum: 0.05 };
+  let ctx = null, master = null, nodes = [];
+
+  function noiseBuffer(kind) {
+    const len = ctx.sampleRate * 8;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      if (kind === "brown") { last = (last + 0.02 * white) / 1.02; data[i] = last * 3.5; }
+      else { data[i] = white; }
+    }
+    return buf;
+  }
+
+  function addNoise(kind, filters) {
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuffer(kind);
+    src.loop = true;
+    let node = src;
+    filters.forEach(([type, freq]) => {
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = freq;
+      node.connect(f);
+      node = f;
+    });
+    src.start();
+    nodes.push(src);
+    return node;
+  }
+
+  function stopAmbient() {
+    nodes.forEach((n) => { try { n.stop(); } catch (e) {} });
+    nodes = [];
+    if (master) { master.disconnect(); master = null; }
+  }
+
+  function startAmbient(kind) {
+    stopAmbient();
+    if (kind === "none" || !ctx) return;
+    ctx.resume();
+    master = ctx.createGain();
+    master.gain.value = 0;
+    master.connect(ctx.destination);
+    if (kind === "rain") {
+      addNoise("white", [["highpass", 700], ["lowpass", 5000]]).connect(master);
+    } else if (kind === "ocean") {
+      const waves = ctx.createGain();
+      waves.gain.value = 0.55;
+      const lfo = ctx.createOscillator();      // slow swell, like waves rolling in and out
+      lfo.frequency.value = 0.1;
+      const depth = ctx.createGain();
+      depth.gain.value = 0.4;
+      lfo.connect(depth);
+      depth.connect(waves.gain);
+      lfo.start();
+      nodes.push(lfo);
+      addNoise("brown", [["lowpass", 600]]).connect(waves);
+      waves.connect(master);
+    } else if (kind === "hum") {
+      [110, 165].forEach((freq) => {
+        const osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.connect(master);
+        osc.start();
+        nodes.push(osc);
+      });
+    }
+    master.gain.linearRampToValueAtTime(LEVELS[kind], ctx.currentTime + 6);  // fade in
+  }
+
+  function fadeAmbient(seconds) {
+    if (!master) return;
+    const current = master;
+    current.gain.cancelScheduledValues(ctx.currentTime);
+    current.gain.setValueAtTime(current.gain.value, ctx.currentTime);
+    current.gain.linearRampToValueAtTime(0, ctx.currentTime + seconds);
+    setTimeout(() => { if (master === current) stopAmbient(); }, seconds * 1000 + 500);
+  }
+
+  go.onclick = async () => {
+    const idea = $("idea").value.trim() || "a lion who is afraid of the dark";
+    const url = ($("url").value.trim() || FUNCTION_URL.trim());
+    if (!url.startsWith("https://")) {
+      $("setup").open = true;
+      setStatus("Open Setup and paste your Function URL. It should start with https://", true);
+      return;
+    }
+    try { localStorage.setItem("functionUrl", url); } catch (e) {}
+    go.disabled = true;
+    player.hidden = true;
+    player.pause();
+    stopAmbient();
+    try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume(); } catch (e) {}
+    startWaiting();
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idea, minutes: Number($("minutes").value), language: $("language").value, code: $("code").value })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Something went wrong.");
+      player.src = data.audio_url;
+      player.hidden = false;
+      setStatus("Your story is ready. Sweet dreams.");
+      player.play().catch(() => setStatus("Your story is ready. Press play when you are cozy."));
+    } catch (err) {
+      setStatus(err.message || "Sorry, the storyteller fell asleep. Please try again.", true);
+    } finally {
+      clearInterval(waitTimer);
+      go.disabled = false;
+    }
+  };
+</script>
+</body>
+</html>
